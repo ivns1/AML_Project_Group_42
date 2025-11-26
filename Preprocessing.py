@@ -10,6 +10,7 @@ attr_names_path = os.path.join(root, 'aml-2025-feathers-in-focus', 'attributes.t
 class_names = np.load(cn_path, allow_pickle=True)
 attributes = np.load(attr_path)
 
+
 # Class names preprocessing
 class_names = class_names.item()  
 
@@ -17,7 +18,8 @@ rows = []
 for item in class_names:
     item_str = str(item)
     parts = item_str.split('.', 1)
-    rows.append((parts[0], parts[1]))
+    label = int(parts[0])
+    rows.append((label, parts[1]))
 
 rows.sort(key=lambda x: int(x[0]))
 
@@ -39,7 +41,6 @@ with open(attr_names_path, "r", encoding="utf-8") as f:
 
         rows.append((int(id_part), group, name))
 
-
 rows.sort(key=lambda x: x[0])
 
 with open('attribute_names.csv', "w", newline="", encoding="utf-8") as f:
@@ -50,14 +51,13 @@ with open('attribute_names.csv', "w", newline="", encoding="utf-8") as f:
 print("Attribute names CSV saved as 'attribute_names.csv'")
 
 
-
 # Attributes for each class
 
 with open('attributes.csv', 'w', newline='', encoding='utf-8') as f:
     writer = csv.writer(f)
-    writer.writerow(['Class'] + [f'{i}' for i in range(attributes.shape[1])])
+    writer.writerow(['Class'] + [f'{i + 1}' for i in range(attributes.shape[1])])
     
     for idx in range(attributes.shape[0]):
-        writer.writerow([idx] + attributes[idx].tolist())
-        
+        writer.writerow([idx + 1] + attributes[idx].tolist())
+
 print("Attributes CSV saved as 'attribute_scores.csv'")
