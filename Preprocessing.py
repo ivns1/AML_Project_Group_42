@@ -55,7 +55,7 @@ print("Attribute names CSV saved as 'attribute_names.csv'")
 
 with open('attributes.csv', 'w', newline='', encoding='utf-8') as f:
     writer = csv.writer(f)
-    writer.writerow(['Class'] + [f'{i + 1}' for i in range(attributes.shape[1])])
+    writer.writerow(['Class_id'] + [f'{i + 1}' for i in range(attributes.shape[1])])
     
     for idx in range(attributes.shape[0]):
         writer.writerow([idx + 1] + attributes[idx].tolist())
