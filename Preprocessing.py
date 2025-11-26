@@ -5,10 +5,10 @@ import csv
 root = os.path.dirname(__file__)
 cn_path = os.path.join(root, 'aml-2025-feathers-in-focus', 'class_names.npy')
 attr_path = os.path.join(root, 'aml-2025-feathers-in-focus', 'attributes.npy')
+attr_names_path = os.path.join(root, 'aml-2025-feathers-in-focus', 'attributes.txt')
 
-# Load both files
 class_names = np.load(cn_path, allow_pickle=True)
-attributes = np.load(attr_path, allow_pickle=True)
+attributes = np.load(attr_path)
 
 # Extract the stored object
 class_names = class_names.item()  
@@ -23,7 +23,28 @@ rows.sort(key=lambda x: int(x[0]))
 
 with open('class_names.csv', 'w', newline='', encoding='utf-8') as f:
     writer = csv.writer(f)
-    writer.writerow(['Index', 'Class_name'])
+    writer.writerow(['Label', 'Class_name'])
     writer.writerows(rows)
 
 print("Class names CSV saved as 'class_names.csv'")
+
+rows = []
+with open(attr_names_path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        id_part, rest = line.split(" ", 1)  # e.g. "1", "has_bill_shape::curved_(up_or_down)"
+        # Split "group::name"
+        group, name = rest.split("::", 1)   # e.g. "has_bill_shape", "curved_(up_or_down)"
+
+        rows.append((int(id_part), group, name))
+
+# Sort by numeric id
+rows.sort(key=lambda x: x[0])
+
+# Write to CSV
+with open('attribute_names.csv', "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["id", "attribute_group", "attribute"])
+    writer.writerows(rows)
+
+print(f"CSV saved as 'attribute_names.csv'")
