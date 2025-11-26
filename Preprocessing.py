@@ -47,4 +47,4 @@ with open('attribute_names.csv', "w", newline="", encoding="utf-8") as f:
     writer.writerow(["id", "attribute_group", "attribute"])
     writer.writerows(rows)
 
-print(f"CSV saved as 'attribute_names.csv'")
+print("Attribute names CSV saved as 'attribute_names.csv'")
