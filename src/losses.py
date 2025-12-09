@@ -176,7 +176,8 @@ class CombinedLoss(nn.Module):
     def forward(
         self,
         outputs: Dict[str, torch.Tensor],
-        targets: Dict[str, torch.Tensor]
+        targets: Dict[str, torch.Tensor],
+        epoch: int = 0  # Added for compatibility with CombinedLossV2
     ) -> Dict[str, torch.Tensor]:
         """
         Compute combined loss.
@@ -184,6 +185,7 @@ class CombinedLoss(nn.Module):
         Args:
             outputs: Model outputs with 'class_logits' and 'attr_logits'
             targets: Target dict with 'label' and 'attributes'
+            epoch: Current epoch (unused, for API compatibility)
 
         Returns:
             Dictionary with 'total', 'class_loss', 'attr_loss'
@@ -207,6 +209,200 @@ class CombinedLoss(nn.Module):
             'total': total_loss,
             'class_loss': class_loss,
             'attr_loss': attr_loss
+        }
+
+
+class ClassAttributeConsistencyLoss(nn.Module):
+    """
+    Enforces consistency between class predictions and attribute predictions
+    using the class-attribute matrix as prior knowledge.
+
+    The idea: if the model predicts high probability for attributes like "red breast",
+    then classes known to have red breasts should have higher probabilities.
+
+    Loss = KL(class_probs || attr_based_class_probs)
+    """
+
+    def __init__(
+        self,
+        class_attribute_matrix: torch.Tensor,
+        temperature: float = 2.0,
+        reduction: str = 'mean'
+    ):
+        """
+        Args:
+            class_attribute_matrix: (num_classes, num_attributes) matrix
+            temperature: Softmax temperature for smoothing
+            reduction: 'mean', 'sum', or 'none'
+        """
+        super().__init__()
+        # Register as buffer so it moves with the model
+        self.register_buffer('class_attr_matrix', class_attribute_matrix)
+        self.temperature = temperature
+        self.reduction = reduction
+
+    def forward(
+        self,
+        class_logits: torch.Tensor,
+        attr_logits: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+            class_logits: (B, num_classes) class prediction logits
+            attr_logits: (B, num_attributes) attribute prediction logits
+
+        Returns:
+            Consistency loss value
+        """
+        # Get predicted attribute probabilities
+        pred_attrs = torch.sigmoid(attr_logits)  # (B, 312)
+
+        # Ensure class_attr_matrix is on the same device as input
+        class_attr_matrix = self.class_attr_matrix.to(pred_attrs.device)
+
+        # Compute class scores from attributes: (B, 312) @ (312, 200) = (B, 200)
+        # Each class score = sum of (predicted attr prob * class-attr prob)
+        attr_based_class_scores = pred_attrs @ class_attr_matrix.T  # (B, 200)
+
+        # Convert to probabilities with temperature
+        attr_based_class_probs = F.softmax(attr_based_class_scores / self.temperature, dim=1)
+        class_probs = F.softmax(class_logits / self.temperature, dim=1)
+
+        # KL divergence: KL(class_probs || attr_based_probs)
+        # Using log for numerical stability
+        kl_loss = F.kl_div(
+            attr_based_class_probs.log(),
+            class_probs,
+            reduction='batchmean'
+        )
+
+        return kl_loss
+
+
+class CombinedLossV2(nn.Module):
+    """
+    Enhanced combined loss for multi-task learning with:
+    - Classification loss (label smoothing cross entropy)
+    - Attribute prediction loss (BCE)
+    - Class-attribute consistency loss
+    - Attribute loss scheduling (decay over epochs)
+
+    L_total = L_class + lambda_attr(epoch) * L_attr + lambda_cons * L_cons
+    """
+
+    def __init__(
+        self,
+        class_attribute_matrix: torch.Tensor,
+        num_classes: int = 200,
+        label_smoothing: float = 0.1,
+        attr_weight_initial: float = 0.5,
+        attr_weight_final: float = 0.1,
+        attr_weight_decay_epochs: int = 50,
+        consistency_weight: float = 0.1,
+        consistency_temperature: float = 2.0,
+        use_focal: bool = False,
+        focal_gamma: float = 2.0,
+        class_weights: Optional[torch.Tensor] = None
+    ):
+        """
+        Args:
+            class_attribute_matrix: (200, 312) class-attribute matrix
+            num_classes: Number of classes
+            label_smoothing: Label smoothing factor
+            attr_weight_initial: Initial attribute loss weight
+            attr_weight_final: Final attribute loss weight (after decay)
+            attr_weight_decay_epochs: Number of epochs to decay attr weight
+            consistency_weight: Weight for consistency loss
+            consistency_temperature: Temperature for consistency loss
+            use_focal: Use focal loss for classification
+            focal_gamma: Focal loss gamma
+            class_weights: Optional class weights for imbalance
+        """
+        super().__init__()
+
+        self.attr_weight_initial = attr_weight_initial
+        self.attr_weight_final = attr_weight_final
+        self.attr_weight_decay_epochs = attr_weight_decay_epochs
+        self.consistency_weight = consistency_weight
+        self.class_weights = class_weights
+
+        # Classification loss
+        if use_focal:
+            self.class_loss = FocalLoss(gamma=focal_gamma)
+        elif label_smoothing > 0:
+            self.class_loss = LabelSmoothingCrossEntropy(smoothing=label_smoothing)
+        else:
+            self.class_loss = nn.CrossEntropyLoss(weight=class_weights)
+
+        # Attribute loss
+        self.attr_loss = AttributeLoss()
+
+        # Consistency loss
+        self.consistency_loss = ClassAttributeConsistencyLoss(
+            class_attribute_matrix,
+            temperature=consistency_temperature
+        )
+
+    def get_current_attr_weight(self, epoch: int) -> float:
+        """Compute attribute weight with linear decay schedule."""
+        if epoch >= self.attr_weight_decay_epochs:
+            return self.attr_weight_final
+
+        decay_progress = epoch / self.attr_weight_decay_epochs
+        return self.attr_weight_initial - decay_progress * (
+            self.attr_weight_initial - self.attr_weight_final
+        )
+
+    def forward(
+        self,
+        outputs: Dict[str, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
+        epoch: int = 0
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute combined loss.
+
+        Args:
+            outputs: Model outputs with 'class_logits' and 'attr_logits'
+            targets: Target dict with 'label' and 'attributes'
+            epoch: Current epoch (for attribute weight scheduling)
+
+        Returns:
+            Dictionary with 'total', 'class_loss', 'attr_loss', 'consistency_loss'
+        """
+        # Classification loss
+        class_logits = outputs['class_logits']
+        labels = targets['label']
+        class_loss = self.class_loss(class_logits, labels)
+
+        # Attribute loss (if available)
+        attr_loss = torch.tensor(0.0, device=class_logits.device)
+        consistency_loss = torch.tensor(0.0, device=class_logits.device)
+
+        if 'attributes' in targets and 'attr_logits' in outputs:
+            attr_logits = outputs['attr_logits']
+            attr_targets = targets['attributes']
+            attr_loss = self.attr_loss(attr_logits, attr_targets)
+
+            # Consistency loss
+            consistency_loss = self.consistency_loss(class_logits, attr_logits)
+
+        # Get scheduled attribute weight
+        current_attr_weight = self.get_current_attr_weight(epoch)
+
+        # Combined loss
+        total_loss = (
+            class_loss +
+            current_attr_weight * attr_loss +
+            self.consistency_weight * consistency_loss
+        )
+
+        return {
+            'total': total_loss,
+            'class_loss': class_loss,
+            'attr_loss': attr_loss,
+            'consistency_loss': consistency_loss,
+            'current_attr_weight': current_attr_weight
         }
 
 
