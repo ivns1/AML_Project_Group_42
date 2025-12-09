@@ -16,17 +16,45 @@ from datetime import datetime
 
 import pandas as pd
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.config import Config
-from src.dataset import BirdDataset, get_class_names
-from src.model import BirdClassifier, LightBirdClassifier
+from src.model import BirdClassifier, LightBirdClassifier, BirdClassifierV2
 from src.transforms import get_val_transforms, get_tta_transforms
 from src.utils import set_seed
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+
+
+class DirectTestDataset(Dataset):
+    """Test dataset that loads images directly by ID (1.jpg, 2.jpg, etc.)."""
+
+    def __init__(self, image_dir, num_images, transform):
+        self.image_dir = image_dir
+        self.num_images = num_images
+        self.transform = transform
+
+    def __len__(self):
+        return self.num_images
+
+    def __getitem__(self, idx):
+        # ID is 1-indexed (1 to 4000)
+        img_id = idx + 1
+        img_path = f"{self.image_dir}/{img_id}.jpg"
+
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            print(f"Error loading {img_path}: {e}")
+            image = Image.new('RGB', (224, 224), color='gray')
+
+        if self.transform:
+            image = self.transform(image)
+
+        return {'image': image, 'id': img_id}
 
 
 def parse_args():
@@ -35,9 +63,11 @@ def parse_args():
 
     parser.add_argument('--checkpoint', type=str, default='checkpoints/best_model.pth',
                         help='Path to model checkpoint')
-    parser.add_argument('--model', type=str, default='standard',
-                        choices=['standard', 'light'],
-                        help='Model type')
+    parser.add_argument('--model', type=str, default='v2',
+                        choices=['standard', 'light', 'v2'],
+                        help='Model type: standard, light, or v2')
+    parser.add_argument('--latent_dim', type=int, default=128,
+                        help='Latent dimension for v2 model')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='Batch size for inference')
     parser.add_argument('--tta', action='store_true',
@@ -96,8 +126,6 @@ def predict_with_tta(
     Returns:
         Predicted class (1-indexed)
     """
-    from PIL import Image
-
     image = Image.open(image_path).convert('RGB')
 
     all_logits = []
@@ -143,11 +171,21 @@ def main():
             num_classes=config.num_classes,
             num_attributes=config.num_attributes
         )
-    else:
+    elif args.model == 'light':
         model = LightBirdClassifier(
             num_classes=config.num_classes,
             num_attributes=config.num_attributes
         )
+    elif args.model == 'v2':
+        model = BirdClassifierV2(
+            num_classes=config.num_classes,
+            num_attributes=config.num_attributes,
+            latent_dim=args.latent_dim,
+            use_se=True,
+            use_gated_attrs=False
+        )
+    else:
+        raise ValueError(f"Unknown model type: {args.model}")
 
     # Load checkpoint
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
@@ -203,13 +241,14 @@ def main():
             })
     else:
         print("Standard inference...")
-        from torch.utils.data import DataLoader
 
-        test_dataset = BirdDataset(
-            csv_file=config.test_csv,
+        # FIXED: Use direct ID -> filename mapping
+        # Kaggle expects id=1 to predict for 1.jpg, id=2 for 2.jpg, etc.
+        # Create dataset with direct ID mapping
+        test_dataset = DirectTestDataset(
             image_dir=config.test_image_dir,
-            transform=test_transform,
-            mode='test'
+            num_images=4000,  # 4000 test images
+            transform=test_transform
         )
 
         test_loader = DataLoader(
@@ -217,7 +256,7 @@ def main():
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=config.num_workers,
-            pin_memory=True
+            pin_memory=False  # Disabled for MPS compatibility
         )
 
         all_ids = []

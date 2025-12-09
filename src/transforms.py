@@ -3,7 +3,10 @@ Data augmentation and transformation pipelines for Bird Classification.
 """
 
 from typing import Tuple, Optional
+import numpy as np
+import torch
 from torchvision import transforms
+from torchvision.transforms import TrivialAugmentWide
 
 
 def get_train_transforms(
@@ -191,7 +194,6 @@ def denormalize(
     Returns:
         Denormalized tensor
     """
-    import torch
     mean = torch.tensor(mean).view(-1, 1, 1)
     std = torch.tensor(std).view(-1, 1, 1)
 
@@ -200,40 +202,6 @@ def denormalize(
         std = std.to(tensor.device)
 
     return tensor * std + mean
-
-
-class Cutout:
-    """Cutout data augmentation."""
-
-    def __init__(self, n_holes: int = 1, length: int = 16):
-        """
-        Args:
-            n_holes: Number of holes to cut out
-            length: Length (pixels) of each hole
-        """
-        self.n_holes = n_holes
-        self.length = length
-
-    def __call__(self, img):
-        import torch
-        import numpy as np
-
-        h, w = img.size(1), img.size(2)
-        mask = np.ones((h, w), np.float32)
-
-        for _ in range(self.n_holes):
-            y = np.random.randint(h)
-            x = np.random.randint(w)
-
-            y1 = np.clip(y - self.length // 2, 0, h)
-            y2 = np.clip(y + self.length // 2, 0, h)
-            x1 = np.clip(x - self.length // 2, 0, w)
-            x2 = np.clip(x + self.length // 2, 0, w)
-
-            mask[y1:y2, x1:x2] = 0.0
-
-        mask = torch.from_numpy(mask).expand_as(img)
-        return img * mask
 
 
 class Mixup:
@@ -247,21 +215,132 @@ class Mixup:
         self.alpha = alpha
 
     def __call__(self, batch_x, batch_y):
-        import torch
-        import numpy as np
-
         if self.alpha > 0:
             lam = np.random.beta(self.alpha, self.alpha)
         else:
             lam = 1.0
 
         batch_size = batch_x.size(0)
-        index = torch.randperm(batch_size)
+        index = torch.randperm(batch_size).to(batch_x.device)
 
         mixed_x = lam * batch_x + (1 - lam) * batch_x[index]
         y_a, y_b = batch_y, batch_y[index]
 
         return mixed_x, y_a, y_b, lam
+
+
+class CutMix:
+    """CutMix data augmentation for training."""
+
+    def __init__(self, alpha: float = 1.0, prob: float = 0.5):
+        """
+        Args:
+            alpha: Beta distribution parameter for lambda
+            prob: Probability of applying CutMix
+        """
+        self.alpha = alpha
+        self.prob = prob
+
+    def __call__(self, batch_x, batch_y):
+        """
+        Apply CutMix augmentation.
+
+        Args:
+            batch_x: Batch of images (B, C, H, W)
+            batch_y: Batch of labels (B,)
+
+        Returns:
+            mixed_x, y_a, y_b, lam
+        """
+        if np.random.rand() > self.prob:
+            return batch_x, batch_y, batch_y, 1.0
+
+        lam = np.random.beta(self.alpha, self.alpha)
+        batch_size = batch_x.size(0)
+        index = torch.randperm(batch_size).to(batch_x.device)
+
+        # Get image dimensions
+        W, H = batch_x.size(3), batch_x.size(2)
+
+        # Generate random bounding box
+        cut_rat = np.sqrt(1. - lam)
+        cut_w = int(W * cut_rat)
+        cut_h = int(H * cut_rat)
+
+        cx = np.random.randint(W)
+        cy = np.random.randint(H)
+
+        bbx1 = np.clip(cx - cut_w // 2, 0, W)
+        bby1 = np.clip(cy - cut_h // 2, 0, H)
+        bbx2 = np.clip(cx + cut_w // 2, 0, W)
+        bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+        # Apply cutmix
+        batch_x_clone = batch_x.clone()
+        batch_x_clone[:, :, bby1:bby2, bbx1:bbx2] = batch_x[index, :, bby1:bby2, bbx1:bbx2]
+
+        # Adjust lambda to exact area ratio
+        lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
+
+        return batch_x_clone, batch_y, batch_y[index], lam
+
+
+def get_sota_train_transforms(
+    image_size: int = 224,
+    mean: Tuple[float, ...] = (0.485, 0.456, 0.406),
+    std: Tuple[float, ...] = (0.229, 0.224, 0.225)
+) -> transforms.Compose:
+    """
+    SOTA augmentation for fine-grained bird classification.
+
+    Includes:
+    - Aggressive random crop
+    - TrivialAugmentWide
+    - Strong color jitter
+    - Random erasing
+
+    Args:
+        image_size: Target image size
+        mean: Normalization mean
+        std: Normalization std
+
+    Returns:
+        Composed transforms
+    """
+    return transforms.Compose([
+        # Geometric transforms
+        transforms.RandomResizedCrop(
+            size=image_size,
+            scale=(0.6, 1.0),
+            ratio=(0.75, 1.33),
+            interpolation=transforms.InterpolationMode.BILINEAR
+        ),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomRotation(
+            degrees=20,
+            interpolation=transforms.InterpolationMode.BILINEAR
+        ),
+
+        # TrivialAugment - SOTA automatic augmentation
+        TrivialAugmentWide(),
+
+        # Additional strong color augmentation
+        transforms.RandomApply([
+            transforms.ColorJitter(
+                brightness=0.4,
+                contrast=0.4,
+                saturation=0.4,
+                hue=0.15
+            )
+        ], p=0.8),
+
+        # Convert to tensor and normalize
+        transforms.ToTensor(),
+        transforms.Normalize(mean=mean, std=std),
+
+        # Random erasing for regularization
+        transforms.RandomErasing(p=0.25, scale=(0.02, 0.2), ratio=(0.3, 3.3))
+    ])
 
 
 if __name__ == "__main__":
@@ -278,8 +357,7 @@ if __name__ == "__main__":
     print(val_transform)
 
     # Test with a dummy image
-    from PIL import Image
-    import torch
+    from PIL import Image  # Only needed for testing
 
     dummy_img = Image.new('RGB', (300, 300), color='red')
 

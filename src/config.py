@@ -16,7 +16,8 @@ class Config:
     # ===================
     # Path Configuration
     # ===================
-    project_root: str = "/Users/berkbahcetepe/Desktop/AML_Project"
+    # Use relative path from config file location (src/config.py -> project root)
+    project_root: str = field(default_factory=lambda: str(Path(__file__).parent.parent))
     data_root: str = field(default="")
     train_csv: str = field(default="")
     test_csv: str = field(default="")
@@ -65,6 +66,17 @@ class Config:
     attribute_loss_weight: float = 0.3
     use_class_weights: bool = True
 
+    # Enhanced Loss (CombinedLossV2)
+    use_enhanced_loss: bool = True
+    attr_weight_initial: float = 0.5
+    attr_weight_final: float = 0.1
+    attr_weight_decay_epochs: int = 50
+    consistency_loss_weight: float = 0.1
+    consistency_loss_temperature: float = 2.0
+
+    # Model Architecture V2
+    latent_dim: int = 128  # Shared latent dimension for BirdClassifierV2
+
     # Regularization
     gradient_clip_val: float = 1.0
     early_stopping_patience: int = 15
@@ -78,12 +90,20 @@ class Config:
 
     # Augmentation
     use_augmentation: bool = True
+    use_sota_augmentation: bool = False
     random_crop_scale: Tuple[float, float] = (0.8, 1.0)
     random_rotation_degrees: int = 15
     color_jitter_brightness: float = 0.2
     color_jitter_contrast: float = 0.2
     color_jitter_saturation: float = 0.2
     horizontal_flip_prob: float = 0.5
+
+    # CutMix/MixUp
+    use_cutmix: bool = False
+    cutmix_alpha: float = 1.0
+    cutmix_prob: float = 0.5
+    use_mixup: bool = False
+    mixup_alpha: float = 0.2
 
     # Normalization (ImageNet stats)
     normalize_mean: Tuple[float, ...] = (0.485, 0.456, 0.406)

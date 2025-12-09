@@ -3,19 +3,22 @@ Dataset and DataLoader for Bird Classification.
 """
 
 import os
+import logging
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List, Union
+from typing import Optional, Tuple, Dict, List
 
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+
+logger = logging.getLogger(__name__)
+from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 
 from .config import Config
-from .transforms import get_train_transforms, get_val_transforms, get_test_transforms
+from .transforms import get_train_transforms, get_val_transforms, get_test_transforms, get_sota_train_transforms
 
 
 class BirdDataset(Dataset):
@@ -97,8 +100,8 @@ class BirdDataset(Dataset):
         # Load image
         try:
             image = Image.open(full_path).convert('RGB')
-        except Exception as e:
-            print(f"Error loading image {full_path}: {e}")
+        except (FileNotFoundError, IOError, UnidentifiedImageError) as e:
+            logger.error(f"Error loading image {full_path}: {e}")
             # Return a placeholder
             image = Image.new('RGB', (224, 224), color='gray')
 
@@ -147,16 +150,23 @@ def create_dataloaders(
     """
     # Set default transforms
     if train_transform is None:
-        train_transform = get_train_transforms(
-            image_size=config.image_size,
-            crop_scale=config.random_crop_scale,
-            rotation_degrees=config.random_rotation_degrees,
-            brightness=config.color_jitter_brightness,
-            contrast=config.color_jitter_contrast,
-            saturation=config.color_jitter_saturation,
-            mean=config.normalize_mean,
-            std=config.normalize_std
-        )
+        if config.use_sota_augmentation:
+            train_transform = get_sota_train_transforms(
+                image_size=config.image_size,
+                mean=config.normalize_mean,
+                std=config.normalize_std
+            )
+        else:
+            train_transform = get_train_transforms(
+                image_size=config.image_size,
+                crop_scale=config.random_crop_scale,
+                rotation_degrees=config.random_rotation_degrees,
+                brightness=config.color_jitter_brightness,
+                contrast=config.color_jitter_contrast,
+                saturation=config.color_jitter_saturation,
+                mean=config.normalize_mean,
+                std=config.normalize_std
+            )
 
     if val_transform is None:
         val_transform = get_val_transforms(
@@ -248,6 +258,22 @@ def get_class_names(class_names_csv: str) -> Dict[int, str]:
     """
     df = pd.read_csv(class_names_csv)
     return dict(zip(df['Label'], df['Class_name']))
+
+
+def load_class_attribute_matrix(attributes_csv: str) -> torch.Tensor:
+    """
+    Load the class-attribute matrix for consistency loss.
+
+    Args:
+        attributes_csv: Path to attributes CSV file (200 classes x 312 attributes)
+
+    Returns:
+        Tensor of shape (200, 312) with class-attribute probabilities
+    """
+    attr_df = pd.read_csv(attributes_csv)
+    # Skip the Class_id column, get only attribute columns
+    matrix = attr_df.iloc[:, 1:].values.astype(np.float32)
+    return torch.tensor(matrix)
 
 
 def get_class_weights(train_loader: DataLoader, num_classes: int = 200) -> torch.Tensor:
