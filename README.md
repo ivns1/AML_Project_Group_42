@@ -11,6 +11,17 @@ implemented in a separate branch.
 ## Repository Structure
 
 ```text
+aml-2025-feathers-in-focus/
+├── train_images/
+│   └── train_images/
+├── test_images/
+│   └── test_images/
+├── train_images.csv
+├── test_images_path.csv
+├── test_images_sample.csv
+├── attributes.npy
+├── class_names.npy
+│
 ├── src/
 │   ├── __init__.py
 │   ├── config.py
