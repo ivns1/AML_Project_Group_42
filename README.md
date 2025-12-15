@@ -1,7 +1,7 @@
 # ConvNeXt Multi-Task Model
 
 This branch contains an implementation of a ConvNeXt-Tiny multi-task learning model
-for fine-grained bird species classification with attribute supervision.
+for bird species classification with attribute supervision.
 
 This branch is intended to be compared against a custom CNN baseline
 implemented in a separate branch.
