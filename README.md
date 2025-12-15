@@ -20,7 +20,6 @@ implemented in a separate branch.
 │   ├── inference.py
 │   └── utils.py
 │
-├── outputs/
 ├── requirements.txt
 └── README.md
 ```
